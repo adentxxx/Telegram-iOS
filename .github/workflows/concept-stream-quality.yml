@@ -48,6 +48,19 @@ jobs:
       - name: Report every compile error in one run
         run: echo "build --keep_going" >> .bazelrc
 
+      - name: Build for the Simulator without provisioning profiles
+        # The fake-codesigning profiles in the repo expired on 2026-10-30; a Simulator build
+        # doesn't need them (same switch generateProject --disableProvisioningProfiles uses).
+        run: |
+          python3 - <<'PY'
+          path = 'build-system/Make/Make.py'
+          source = open(path).read()
+          anchor = '    bazel_command_line.set_configuration(arguments.configuration)\n    if arguments.embedWatchApp:'
+          assert anchor in source
+          source = source.replace(anchor, "    bazel_command_line.set_configuration(arguments.configuration)\n    if arguments.configuration.endswith('sim_arm64'):\n        bazel_command_line.set_disable_provisioning_profiles()\n    if arguments.embedWatchApp:", 1)
+          open(path, 'w').write(source)
+          PY
+
       - name: Unit tests (TelegramCallsUI)
         run: |
           python3 -u build-system/Make/Make.py \
