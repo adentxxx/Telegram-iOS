@@ -94,15 +94,12 @@ jobs:
         if: success()
         run: |
           mkdir -p build/artifacts
-          APP=$(find bazel-out -path "*ios_sim_arm64*" -name "Telegram.app" -type d | head -1)
-          if [ -z "$APP" ]; then
-            APP_ZIP=$(find bazel-out -name "Telegram.ipa" | head -1)
-            echo "Found $APP_ZIP"
-            cp "$APP_ZIP" build/artifacts/
-          else
-            echo "Found $APP"
-            ditto -c -k --sequesterRsrc --keepParent "$APP" build/artifacts/Telegram-Simulator.app.zip
-          fi
+          IPA=$(readlink -f bazel-bin)/Telegram/Telegram.ipa
+          ls -la "$IPA"
+          rm -rf build/unpacked && mkdir -p build/unpacked
+          unzip -q "$IPA" -d build/unpacked
+          # Payload/Telegram.app is a Simulator build: drag it onto a booted Simulator, or upload the zip to Appetize.
+          (cd build/unpacked/Payload && ditto -c -k --sequesterRsrc --keepParent Telegram.app ../../artifacts/Telegram-Simulator.app.zip)
           ls -la build/artifacts
 
       - name: Upload the Simulator app
