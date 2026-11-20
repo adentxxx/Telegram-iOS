@@ -38,12 +38,15 @@ jobs:
         run: python3 .github/concept/pick_simulator.py
 
       - name: Restore Bazel cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/telegram-bazel-cache
           key: bazel-${{ runner.os }}-${{ hashFiles('versions.json') }}-${{ github.sha }}
           restore-keys: |
             bazel-${{ runner.os }}-${{ hashFiles('versions.json') }}-
+
+      - name: Report every compile error in one run
+        run: echo "build --keep_going" >> .bazelrc
 
       - name: Unit tests (TelegramCallsUI)
         run: |
@@ -56,6 +59,7 @@ jobs:
             --codesigningInformationPath build-system/fake-codesigning
 
       - name: Build the app for the Simulator
+        if: success() || failure()
         run: |
           python3 -u build-system/Make/Make.py \
             --overrideXcodeVersion \
@@ -65,6 +69,13 @@ jobs:
             --codesigningInformationPath build-system/fake-codesigning \
             --configuration=debug_sim_arm64 \
             --buildNumber=10000
+
+      - name: Save Bazel cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/telegram-bazel-cache
+          key: bazel-${{ runner.os }}-${{ hashFiles('versions.json') }}-${{ github.sha }}-${{ github.run_attempt }}
 
       - name: Collect the Simulator app
         if: success()
