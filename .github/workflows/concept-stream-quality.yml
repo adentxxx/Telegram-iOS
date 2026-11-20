@@ -1,0 +1,98 @@
+name: Concept — stream quality & camera effects
+
+on:
+  push:
+    branches: [ concept/stream-quality ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: xcode-27
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check out submodules
+        run: |
+          # tgcalls is referenced relative to the upstream org; a fork has no copy of it.
+          git config submodule.submodules/TgVoipWebrtc/tgcalls.url https://github.com/TelegramMessenger/tgcalls.git
+          git submodule sync --recursive
+          git -c submodule.submodules/TgVoipWebrtc/tgcalls.url=https://github.com/TelegramMessenger/tgcalls.git submodule update --init --recursive --depth 1 --jobs 8
+
+      - name: Select Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          XCODE_VERSION=$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')
+          if [ -d "/Applications/Xcode_$XCODE_VERSION.app" ]; then
+            sudo xcode-select -s "/Applications/Xcode_$XCODE_VERSION.app/Contents/Developer"
+          else
+            echo "Xcode $XCODE_VERSION is not installed, using the default one"
+          fi
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Pick a simulator
+        run: python3 .github/concept/pick_simulator.py
+
+      - name: Restore Bazel cache
+        uses: actions/cache@v4
+        with:
+          path: ~/telegram-bazel-cache
+          key: bazel-${{ runner.os }}-${{ hashFiles('versions.json') }}-${{ github.sha }}
+          restore-keys: |
+            bazel-${{ runner.os }}-${{ hashFiles('versions.json') }}-
+
+      - name: Unit tests (TelegramCallsUI)
+        run: |
+          python3 -u build-system/Make/Make.py \
+            --overrideXcodeVersion \
+            --cacheDir="$HOME/telegram-bazel-cache" \
+            test \
+            --target //submodules/TelegramCallsUI:TelegramCallsUITests \
+            --configurationPath build-system/appstore-configuration.json \
+            --codesigningInformationPath build-system/fake-codesigning
+
+      - name: Build the app for the Simulator
+        run: |
+          python3 -u build-system/Make/Make.py \
+            --overrideXcodeVersion \
+            --cacheDir="$HOME/telegram-bazel-cache" \
+            build \
+            --configurationPath build-system/appstore-configuration.json \
+            --codesigningInformationPath build-system/fake-codesigning \
+            --configuration=debug_sim_arm64 \
+            --buildNumber=10000
+
+      - name: Collect the Simulator app
+        if: success()
+        run: |
+          mkdir -p build/artifacts
+          APP=$(find bazel-out -path "*ios_sim_arm64*" -name "Telegram.app" -type d | head -1)
+          if [ -z "$APP" ]; then
+            APP_ZIP=$(find bazel-out -name "Telegram.ipa" | head -1)
+            echo "Found $APP_ZIP"
+            cp "$APP_ZIP" build/artifacts/
+          else
+            echo "Found $APP"
+            ditto -c -k --sequesterRsrc --keepParent "$APP" build/artifacts/Telegram-Simulator.app.zip
+          fi
+          ls -la build/artifacts
+
+      - name: Upload the Simulator app
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Telegram-Simulator
+          path: build/artifacts
+          retention-days: 14
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: bazel-testlogs/submodules/TelegramCallsUI/**/test.log
+          if-no-files-found: ignore

@@ -301,6 +301,8 @@ private final class EmbeddedBroadcastUploadImpl: BroadcastUploadImpl {
 @objc(BroadcastUploadSampleHandler) class BroadcastUploadSampleHandler: RPBroadcastSampleHandler {
     private var impl: BroadcastUploadImpl?
     private var audioConverter: CustomAudioConverter?
+    /// Resolution, frame rate and device audio the host picked in the Share Screen sheet.
+    private var frameProcessor: ScreencastFrameProcessor?
 
     public override func beginRequest(with context: NSExtensionContext) {
         super.beginRequest(with: context)
@@ -331,6 +333,8 @@ private final class EmbeddedBroadcastUploadImpl: BroadcastUploadImpl {
         }
 
         let rootPath = rootPathForBasePath(appGroupUrl.path)
+        
+        self.frameProcessor = ScreencastFrameProcessor(settings: ScreencastQualitySettings.load(basePath: rootPath))
         
         EngineTempBox.initializeShared(basePath: rootPath, processType: "share", launchSpecificId: Int64.random(in: Int64.min ... Int64.max))
 
@@ -377,10 +381,21 @@ private final class EmbeddedBroadcastUploadImpl: BroadcastUploadImpl {
     }
 
     private func processVideoSampleBuffer(sampleBuffer: CMSampleBuffer) {
-        self.impl?.processVideoSampleBuffer(sampleBuffer: sampleBuffer)
+        var outputSampleBuffer = sampleBuffer
+        if let frameProcessor = self.frameProcessor {
+            guard let processedSampleBuffer = frameProcessor.process(sampleBuffer: sampleBuffer) else {
+                // Over the frame rate the host picked.
+                return
+            }
+            outputSampleBuffer = processedSampleBuffer
+        }
+        self.impl?.processVideoSampleBuffer(sampleBuffer: outputSampleBuffer)
     }
 
     private func processAudioSampleBuffer(sampleBuffer: CMSampleBuffer) {
+        if let frameProcessor = self.frameProcessor, !frameProcessor.settings.includesDeviceAudio {
+            return
+        }
         guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
             return
         }

@@ -258,6 +258,11 @@ final class VideoChatScreenComponent: Component {
         var isEncryptionKeyExpanded: Bool = false
         
         var videoButton: ComponentView<Empty>?
+        /// Chevron on the Video button: a tap opens "Turn On Camera" / "Share Screen".
+        let videoSourceIndicator = UIImageView()
+        /// Camera with effects (blur, lighting, touch up) while our video is on.
+        var cameraEffectsCapturer: VideoChatCameraEffectsCapturer?
+        weak var shareScreenSettingsController: VideoChatShareScreenSettingsScreen?
         let videoControlButton = ComponentView<Empty>()
         let leaveButton = ComponentView<Empty>()
         let microphoneButton = ComponentView<Empty>()
@@ -946,9 +951,6 @@ final class VideoChatScreenComponent: Component {
         }
         
         private func onCameraPressed() {
-            guard let environment = self.environment else {
-                return
-            }
             guard let currentCall = self.currentCall else {
                 return
             }
@@ -956,46 +958,103 @@ final class VideoChatScreenComponent: Component {
             HapticFeedback().impact(.light)
             if currentCall.hasVideo {
                 currentCall.disableVideo()
+                self.cameraEffectsCapturer?.stop()
+                self.cameraEffectsCapturer = nil
             } else {
-                let presentationData = currentCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: environment.theme)
-                DeviceAccess.authorizeAccess(to: .camera(.videoCall), onlyCheck: true, presentationData: presentationData, present: { [weak self] c, a in
-                    guard let self, let environment = self.environment, let controller = environment.controller() else {
-                        return
-                    }
-                    controller.present(c, in: .window(.root), with: a)
-                }, openSettings: { [weak self] in
+                self.openVideoSourceMenu(sourceView: self.videoButton?.view)
+            }
+        }
+        
+        /// "Turn On Camera" / "Share Screen", anchored to the Video button.
+        private func openVideoSourceMenu(sourceView: UIView?) {
+            guard let environment = self.environment, let controller = environment.controller(), let currentCall = self.currentCall, let sourceView else {
+                return
+            }
+            
+            var items: [ContextMenuItem] = []
+            items.append(.action(ContextMenuActionItem(text: environment.strings.VideoChat_VideoSource_TurnOnCamera, icon: { theme in
+                return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/VideoCall"), color: theme.contextMenu.primaryColor)
+            }, action: { [weak self] _, f in
+                f(.default)
+                self?.openCameraSettings()
+            })))
+            if currentCall.hasScreencast {
+                items.append(.action(ContextMenuActionItem(text: environment.strings.VoiceChat_StopScreenSharing, icon: { theme in
+                    return generateTintedImage(image: UIImage(bundleImageName: "Call/Context Menu/ShareScreen"), color: theme.contextMenu.primaryColor)
+                }, action: { [weak self] _, f in
+                    f(.default)
+                    self?.currentCall?.disableScreencast()
+                })))
+            } else {
+                items.append(.action(ContextMenuActionItem(text: environment.strings.VideoChat_VideoSource_ShareScreen, icon: { theme in
+                    return generateTintedImage(image: UIImage(bundleImageName: "Call/Context Menu/ShareScreen"), color: theme.contextMenu.primaryColor)
+                }, action: { [weak self] _, f in
+                    f(.default)
+                    self?.openShareScreenSettings()
+                })))
+            }
+            
+            let presentationData = currentCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: environment.theme)
+            let contextController = makeContextController(
+                presentationData: presentationData,
+                source: .reference(CallAudioRouteContextReferenceContentSource(sourceView: sourceView)),
+                items: .single(ContextController.Items(content: .list(items)))
+            )
+            controller.presentInGlobalOverlay(contextController)
+        }
+        
+        private func openPremiumIntro() {
+            guard let environment = self.environment, let controller = environment.controller(), let currentCall = self.currentCall else {
+                return
+            }
+            controller.push(PremiumIntroScreen(context: currentCall.accountContext, source: .settings, forceDark: true))
+        }
+        
+        private func openShareScreenSettings() {
+            guard let environment = self.environment, let currentCall = self.currentCall else {
+                return
+            }
+            let context = currentCall.accountContext
+            let controller = VideoChatShareScreenSettingsScreen(context: context, isPremium: context.isPremium, openPremium: { [weak self] in
+                self?.openPremiumIntro()
+            }, start: { _ in
+            })
+            self.shareScreenSettingsController = controller
+            environment.controller()?.present(controller, in: .window(.root))
+        }
+        
+        private func openCameraSettings() {
+            guard let environment = self.environment, let currentCall = self.currentCall else {
+                return
+            }
+            let presentationData = currentCall.accountContext.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: environment.theme)
+            DeviceAccess.authorizeAccess(to: .camera(.videoCall), onlyCheck: true, presentationData: presentationData, present: { [weak self] c, a in
+                guard let self, let environment = self.environment, let controller = environment.controller() else {
+                    return
+                }
+                controller.present(c, in: .window(.root), with: a)
+            }, openSettings: { [weak self] in
+                guard let self, let currentCall = self.currentCall else {
+                    return
+                }
+                currentCall.accountContext.sharedContext.applicationBindings.openSettings()
+            }, _: { [weak self] ready in
+                guard let self, let environment = self.environment, let currentCall = self.currentCall, ready else {
+                    return
+                }
+                let context = currentCall.accountContext
+                let capturer = VideoChatCameraEffectsCapturer(effects: self.cameraEffectsCapturer?.effects ?? .off)
+                let controller = VideoChatCameraSettingsScreen(context: context, capturer: capturer, isPremium: context.isPremium, openPremium: { [weak self] in
+                    self?.openPremiumIntro()
+                }, turnOnVideo: { [weak self] capturer in
                     guard let self, let currentCall = self.currentCall else {
                         return
                     }
-                    currentCall.accountContext.sharedContext.applicationBindings.openSettings()
-                }, _: { [weak self] ready in
-                    guard let self, let environment = self.environment, let currentCall = self.currentCall, ready else {
-                        return
-                    }
-                    var isFrontCamera = true
-                    let videoCapturer = OngoingCallVideoCapturer()
-                    let input = videoCapturer.video()
-                    if let videoView = self.videoRenderingContext.makeView(input: input, blur: false) {
-                        videoView.updateIsEnabled(true)
-                        
-                        let cameraNode = GroupVideoNode(videoView: videoView, backdropVideoView: nil)
-                        let controller = VoiceChatCameraPreviewController(sharedContext: currentCall.accountContext.sharedContext, cameraNode: cameraNode, shareCamera: { [weak self] _, unmuted in
-                            guard let self, let currentCall = self.currentCall else {
-                                return
-                            }
-                            
-                            currentCall.setIsMuted(action: unmuted ? .unmuted : .muted(isPushToTalkActive: false))
-                            currentCall.requestVideo(capturer: videoCapturer, useFrontCamera: isFrontCamera)
-                        }, switchCamera: {
-                            Queue.mainQueue().after(0.1) {
-                                isFrontCamera = !isFrontCamera
-                                videoCapturer.switchVideoInput(isFront: isFrontCamera)
-                            }
-                        })
-                        environment.controller()?.present(controller, in: .window(.root))
-                    }
+                    self.cameraEffectsCapturer = capturer
+                    currentCall.requestVideo(capturer: capturer.capturer, useFrontCamera: true)
                 })
-            }
+                environment.controller()?.present(controller, in: .window(.root))
+            })
         }
         
         private func onAudioRoutePressed(sourceView: UIView?) {
@@ -2627,6 +2686,12 @@ final class VideoChatScreenComponent: Component {
                 self.encryptionKeyBackground = nil
             }
             
+            if let shareScreenSettingsController = self.shareScreenSettingsController, let currentCall = self.currentCall, currentCall.hasScreencast {
+                // The broadcast started from the sheet's "Start Broadcast": nothing left to set up.
+                self.shareScreenSettingsController = nil
+                shareScreenSettingsController.dismiss()
+            }
+            
             let videoButtonContent: VideoChatActionButtonComponent.Content?
             let videoControlButtonContent: VideoChatActionButtonComponent.Content
             let videoControlButtonEnabled: Bool
@@ -3283,7 +3348,9 @@ final class VideoChatScreenComponent: Component {
                             return
                         }
                         if let state = self.callState, state.isMyVideoActive {
-                            if case let .group(groupCall) = self.currentCall {
+                            if let cameraEffectsCapturer = self.cameraEffectsCapturer {
+                                cameraEffectsCapturer.switchCamera()
+                            } else if case let .group(groupCall) = self.currentCall {
                                 groupCall.switchVideoCamera()
                             }
                         } else {
@@ -3352,6 +3419,18 @@ final class VideoChatScreenComponent: Component {
                     }
                     videoButtonTransition.setPosition(view: videoButtonView, position: secondActionButtonFrame.center)
                     videoButtonTransition.setBounds(view: videoButtonView, bounds: CGRect(origin: CGPoint(), size: secondActionButtonFrame.size))
+                    
+                    if self.videoSourceIndicator.image == nil {
+                        self.videoSourceIndicator.image = generateVideoSourceIndicatorImage()
+                        self.videoSourceIndicator.isUserInteractionEnabled = false
+                    }
+                    if self.videoSourceIndicator.superview !== videoButtonView {
+                        videoButtonView.addSubview(self.videoSourceIndicator)
+                    }
+                    let indicatorSize: CGFloat = 20.0
+                    videoButtonTransition.setFrame(view: self.videoSourceIndicator, frame: CGRect(x: secondActionButtonFrame.width - indicatorSize + 2.0, y: secondActionButtonFrame.height - indicatorSize + 2.0, width: indicatorSize, height: indicatorSize))
+                    let isVideoActive = self.callState?.isMyVideoActive ?? false
+                    transition.setAlpha(view: self.videoSourceIndicator, alpha: (isVideoActive || areButtonsActuallyCollapsed || buttonsOnTheSide) ? 0.0 : 1.0)
                 }
             } else if let videoButton = self.videoButton, videoButton.view?.superview != nil {
                 self.videoButton = nil
@@ -4418,4 +4497,25 @@ func allowedStoryReactions(engine: TelegramEngine) -> Signal<[ReactionItem], NoE
 
         return result
     }
+}
+
+/// The small chevron badge in the corner of the Video button.
+private func generateVideoSourceIndicatorImage() -> UIImage? {
+    return generateImage(CGSize(width: 20.0, height: 20.0), rotatedContext: { size, context in
+        context.clear(CGRect(origin: CGPoint(), size: size))
+        context.setFillColor(UIColor(rgb: 0x2c2c2e).cgColor)
+        context.fillEllipse(in: CGRect(origin: CGPoint(), size: size))
+        context.setStrokeColor(UIColor(white: 1.0, alpha: 0.18).cgColor)
+        context.setLineWidth(1.0)
+        context.strokeEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: 0.5, dy: 0.5))
+        
+        context.setStrokeColor(UIColor.white.cgColor)
+        context.setLineWidth(1.5)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.move(to: CGPoint(x: 7.0, y: 8.5))
+        context.addLine(to: CGPoint(x: 10.0, y: 11.5))
+        context.addLine(to: CGPoint(x: 13.0, y: 8.5))
+        context.strokePath()
+    })
 }
